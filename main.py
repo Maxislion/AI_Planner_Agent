@@ -24,18 +24,22 @@ dp = Dispatcher()
 SYSTEM_PROMPT = """
 You extract tasks from user input.
 
-Return ONLY valid JSON.
-No text. No explanations.
+Return ONLY valid JSON array.
 
-Format:
+Example:
+Input: "study IELTS 2 hours and go to gym"
+Output:
 [
-  {"task": "string", "duration": number}
+  {"task": "IELTS", "duration": 120},
+  {"task": "gym", "duration": 60}
 ]
 
 Rules:
 - duration in minutes
 - if not specified → 60
-- output must be valid JSON
+- no explanations
+- no "json"
+- no extra text
 """
 
 
@@ -50,14 +54,19 @@ def parse_tasks(text):
 
     content = response.choices[0].message.content.strip()
 
-    # 🔥 фикс: иногда GPT оборачивает в ```json
+    # 🔥 Удаляем ```json или просто json
     if content.startswith("```"):
         content = content.split("```")[1]
 
+    if content.startswith("json"):
+        content = content[4:].strip()
+
+    print("CLEANED:", content)
+
     try:
         return json.loads(content)
-    except:
-        print("BAD RESPONSE:", content)
+    except Exception as e:
+        print("JSON ERROR:", e)
         return []
 
 
@@ -92,6 +101,7 @@ def build_schedule(tasks):
     return schedule
 
 
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("Send your tasks")
@@ -113,6 +123,58 @@ async def handle_message(message: types.Message):
 
     await message.answer(result)
 
+async def download_voice(bot, voice):
+    file = await bot.get_file(voice.file_id)
+    file_path = file.file_path
+
+    file_url = f"https://api.telegram.org/file/bot{bot.token}/{file_path}"
+
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.get(file_url) as resp:
+            data = await resp.read()
+
+    with open("voice.ogg", "wb") as f:
+        f.write(data)
+
+    return "voice.ogg"
+
+def speech_to_text(file_path):
+    with open(file_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            model="deepseek/deepseek-chat:free",
+            file=audio_file
+        )
+
+    return response.text
+
+@dp.message(lambda message: message.voice)
+async def handle_voice(message: types.Message):
+    await message.answer("Processing voice...")
+
+    file_path = await download_voice(bot, message.voice)
+
+    try:
+        text = speech_to_text(file_path)
+        print("TRANSCRIPT:", text)
+    except Exception as e:
+        await message.answer("Error processing voice")
+        print(e)
+        return
+
+    tasks = parse_tasks(text)
+
+    if not tasks:
+        await message.answer("Couldn't understand tasks")
+        return
+
+    schedule = build_schedule(tasks)
+
+    result = "🗓 Plan:\n\n"
+    for s in schedule:
+        result += f"{s['start']} - {s['end']} | {s['task']}\n"
+
+    await message.answer(result)
 
 async def main():
     await dp.start_polling(bot)
