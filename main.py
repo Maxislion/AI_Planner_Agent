@@ -6,11 +6,13 @@ from openai import OpenAI
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
+from db import *
 
 load_dotenv()
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENROUTER_API_KEY")
+CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openrouter/auto")
 
 
 client = OpenAI(
@@ -43,23 +45,37 @@ Rules:
 """
 
 
+def clean_json_response(content):
+    content = content.strip()
+
+    if content.startswith("```"):
+        parts = content.split("```")
+        if len(parts) > 1:
+            content = parts[1].strip()
+
+    if content.startswith("json"):
+        content = content[4:].strip()
+
+    return content
+
+
 def parse_tasks(text):
-    response = client.chat.completions.create(
-        model="openrouter/free",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text}
-        ]
-    )
+    try:
+        response = client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ]
+        )
+    except Exception as e:
+        print("TASK PARSE ERROR:", e)
+        return []
 
     content = response.choices[0].message.content.strip()
 
     # 🔥 Удаляем ```json или просто json
-    if content.startswith("```"):
-        content = content.split("```")[1]
-
-    if content.startswith("json"):
-        content = content[4:].strip()
+    content = clean_json_response(content)
 
     print("CLEANED:", content)
 
@@ -100,6 +116,41 @@ def build_schedule(tasks):
 
     return schedule
 
+def parse_fixed_event(text):
+    try:
+        response = client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+Detect recurring schedule like school or work.
+
+Return JSON or null.
+
+Format:
+{
+  "title": "string",
+  "start": "HH:MM",
+  "end": "HH:MM",
+  "days": ["mon","tue"]
+}
+"""
+                },
+                {"role": "user", "content": text}
+            ]
+        )
+    except Exception as e:
+        print("FIXED EVENT PARSE ERROR:", e)
+        return None
+
+    content = clean_json_response(response.choices[0].message.content)
+
+    try:
+        return json.loads(content)
+    except Exception as e:
+        print("FIXED EVENT JSON ERROR:", e)
+        return None
 
 
 @dp.message(Command("start"))
@@ -110,6 +161,7 @@ async def start(message: types.Message):
 @dp.message()
 async def handle_message(message: types.Message):
     tasks = parse_tasks(message.text)
+    event = parse_fixed_event(message.text)
 
     if not tasks:
         await message.answer("Couldn't understand tasks")
@@ -122,6 +174,18 @@ async def handle_message(message: types.Message):
         result += f"{s['start']} - {s['end']} | {s['task']}\n"
 
     await message.answer(result)
+
+    if event:
+        save_fixed_event(
+            message.from_user.id,
+            event["title"],
+            event["start"],
+            event["end"],
+            event["days"]
+        )
+
+    await message.answer("Saved your schedule")
+    return
 
 async def download_voice(bot, voice):
     file = await bot.get_file(voice.file_id)
