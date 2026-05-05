@@ -29,6 +29,13 @@ def save_fixed_event(user_id, title, start_time, end_time, days):
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute(
             """
+            DELETE FROM fixed_events
+            WHERE user_id = ? AND title = ? AND start_time = ? AND end_time = ?
+            """,
+            (user_id, title, start_time, end_time),
+        )
+        conn.execute(
+            """
             INSERT INTO fixed_events (user_id, title, start_time, end_time, days)
             VALUES (?, ?, ?, ?, ?)
             """,
